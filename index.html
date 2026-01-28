@@ -1,1 +1,16 @@
-Websocket party! 🎉
+<html>
+<head>
+    <title>WebSocket Party</title>
+</head>
+<body>
+    <h1>WebSocket Party! 🎉</h1>
+    <script>
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${proto}//${window.location.host}`);
+
+        ws.onmessage = function(event) {
+            console.log(`HTML WebSocket: `, event.data);
+        };
+    </script>
+</body>
+</html>
