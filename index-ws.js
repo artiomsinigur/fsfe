@@ -1,64 +1,15 @@
 const express = require('express');
-const server = require('http').createServer();
+const http = require('http');
+const WebSocket = require('ws');
+const sqlite3 = require('sqlite3').verbose();
+
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
-app.get('/', (req, res) => {
-    res.sendFile('index.html', { root: __dirname });
-});
+// ---------- DATABASE ----------
+const db = new sqlite3.Database(':memory:');
 
-server.on('request', app);
-server.listen(3000, () => {
-    console.log('Server is listening on port 3000');
-});
-
-// This ensures that the database is properly closed when the server is terminated
-process.on('SIGINT', () => {
-    console.log('Received SIGINT. Shutting down server.');
-    wss.clients.forEach((client) => {
-        client.close();
-    });
-    server.close(() => {
-        shutdownDB();
-    });
-});
-
-// Begin WebSocket behavior
-const WebSocket = require('ws').Server;
-const wss = new WebSocket({ server: server });
-
-wss.on('connection', (ws) => {
-    const numClients = wss.clients.size;
-    wss.broadcast(`Current visitors: ${numClients}`);
-    console.log('New client connected: ', numClients);
-
-    if (ws.readyState === ws.OPEN) {
-        ws.send('Welcome to the WebSocket server!');
-    }
-
-    db.run(`
-        INSERT INTO visitors (count, time)
-        VALUES (${numClients}, datetime('now'))
-    `)
-
-    ws.on('close', () => {
-        const numClients = wss.clients.size;
-        wss.broadcast(`Current visitors: ${numClients}`);
-        console.log('Client disconnected: ', numClients);
-    });
-});
-
-wss.broadcast = function broadcast(data) {
-    wss.clients.forEach(function each(client) {
-        client.send(data);
-    });
-};
-// End websockets
-
-// Begin Database setup
-const sqlite = require('sqlite3');
-const db = new sqlite.Database(':memory:');
-
-// Serialize to ensure that the table is created before any operations
 db.serialize(() => {
     db.run(`
         CREATE TABLE visitors (
@@ -66,16 +17,78 @@ db.serialize(() => {
             time TEXT
         )
     `);
-})
- 
-function getCounts(callback) {
-    db.each('SELECT * FROM visitors', (err, row) => {
-        console.log(row);
+});
+
+// ---------- HTTP ----------
+app.get('/', (req, res) => {
+    res.sendFile('index.html', { root: __dirname });
+});
+
+server.listen(3000, () => {
+    console.log('Server is listening on port 3000');
+});
+
+// ---------- WEBSOCKETS ----------
+function broadcast(message) {
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(message);
+        }
     });
 }
 
-function shutdownDB() {
-    getCounts();
-    console.log('Shutting down database.');
-    db.close();
+wss.on('connection', (ws) => {
+    const count = wss.clients.size;
+
+    console.log('New client connected:', count);
+    broadcast(`Current visitors: ${count}`);
+
+    ws.send('Welcome to the WebSocket server!');
+
+    db.run(
+        `INSERT INTO visitors (count, time) VALUES (?, datetime('now'))`,
+        [count]
+    );
+
+    ws.on('close', () => {
+        const count = wss.clients.size;
+        console.log('Client disconnected:', count);
+        broadcast(`Current visitors: ${count}`);
+    });
+});
+
+// ---------- CLEAN SHUTDOWN ----------
+let shuttingDown = false;
+
+process.on('SIGINT', async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    console.log('\nReceived SIGINT. Shutting down server.');
+
+    // Close websocket clients
+    wss.clients.forEach(client => client.close());
+
+    server.close(async () => {
+        await dumpAndCloseDB();
+        process.exit(0);
+    });
+});
+
+function dumpAndCloseDB() {
+    return new Promise((resolve, reject) => {
+        console.log('Dumping visitor counts:');
+
+        db.each(
+            'SELECT * FROM visitors',
+            (err, row) => {
+                if (err) return reject(err);
+                console.log(row);
+            },
+            () => {
+                console.log('Shutting down database.');
+                db.close(resolve);
+            }
+        );
+    });
 }
